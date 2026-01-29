@@ -10,9 +10,10 @@ from pathlib import Path
 
 # ==================== CONFIGURACIÓN ====================
 st.set_page_config(
-    page_title="Analizador Pro - Full Stats & Export", 
+    page_title="Analizador Pro - StatsBomb Enhanced", 
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
+    page_icon="⚽"
 )
 
 # Configuración de rutas multiplataforma
@@ -21,24 +22,38 @@ REGISTRO_FILE = RUTA_BASE / "registro_pronosticos.xlsx"
 
 # ==================== FUNCIONES AUXILIARES ====================
 
-def get_pred_str(val):
+def get_pred_str(val, umbral_propension=0.15):
     """
-    Calcula la línea .5 más cercana y aplica el formato solicitado.
+    Calcula la línea .5 más cercana y determina +/- según PROPENSIÓN.
     
     Args:
-        val (float): Valor numérico a formatear
+        val (float): Valor numérico predicho
+        umbral_propension (float): Distancia mínima a la línea para considerar tendencia clara
     
     Returns:
-        str: Predicción formateada (ej: "+ de 9.5 (9.75)")
+        str: Predicción formateada (ej: "+ de 9.5 (9.75)" o "- de 9.5 (9.25)")
+    
+    Lógica mejorada:
+    - Si val está MUY cerca de la línea (±umbral): "≈ [linea]"
+    - Si val > linea + umbral: "+ de [linea]"  
+    - Si val < linea - umbral: "- de [linea]"
+    - Muestra siempre el valor exacto entre paréntesis
     """
     if pd.isna(val) or val <= 0:
         return "0"
     
     linea = int(val) + 0.5
-    if val < linea:
-        return f"- de {linea} ({val:.2f})"
-    else:
+    diferencia = val - linea
+    
+    # Propensión clara hacia arriba
+    if diferencia > umbral_propension:
         return f"+ de {linea} ({val:.2f})"
+    # Propensión clara hacia abajo
+    elif diferencia < -umbral_propension:
+        return f"- de {linea} ({val:.2f})"
+    # Zona gris (muy cercano a la línea)
+    else:
+        return f"≈ {linea} ({val:.2f})"
 
 
 def cargar_archivo(ruta, tipo='csv'):
@@ -97,44 +112,48 @@ def validar_dataframe(df, columnas_requeridas, nombre_archivo):
     return True
 
 
-def calcular_metricas_prediccion(df_registro):
+def crear_grafico_comparacion(equipo_local, equipo_visitante, 
+                               exp_c_loc, exp_c_vis, 
+                               final_t_loc, final_t_vis):
     """
-    Calcula métricas de precisión del modelo basándose en el registro histórico.
-    
-    Args:
-        df_registro (pd.DataFrame): DataFrame con predicciones y resultados reales
+    Crea gráficos de barras comparativos entre equipos.
     
     Returns:
-        dict: Diccionario con métricas calculadas
+        tuple: (figura_corners, figura_tarjetas)
     """
-    metricas = {
-        'total_predicciones': len(df_registro),
-        'tasa_acierto_corners': 0,
-        'tasa_acierto_tarjetas': 0,
-        'mae_corners': 0,
-        'mae_tarjetas': 0
-    }
+    # Gráfico de córners
+    fig_corners = go.Figure(data=[
+        go.Bar(name='Córners', x=[equipo_local, equipo_visitante], 
+               y=[exp_c_loc, exp_c_vis],
+               marker_color=['#2ecc71', '#e74c3c'],
+               text=[f"{exp_c_loc:.2f}", f"{exp_c_vis:.2f}"],
+               textposition='auto')
+    ])
+    fig_corners.update_layout(
+        title="Proyección de Córners por Equipo",
+        yaxis_title="Córners Esperados",
+        template="plotly_white",
+        height=300,
+        showlegend=False
+    )
     
-    # Solo calcular si hay columnas de resultados reales
-    if 'Corn_Tot_Real' in df_registro.columns:
-        # Filtrar solo predicciones con resultados
-        df_con_resultados = df_registro.dropna(subset=['Corn_Tot_Real'])
-        
-        if len(df_con_resultados) > 0:
-            # Extraer valores numéricos de las predicciones
-            def extraer_valor(pred_str):
-                if pd.isna(pred_str) or pred_str == "0":
-                    return 0
-                try:
-                    # Extraer el número entre paréntesis
-                    return float(pred_str.split('(')[1].split(')')[0])
-                except:
-                    return 0
-            
-            df_con_resultados['pred_num'] = df_con_resultados['Corn_Tot'].apply(extraer_valor)
-            metricas['mae_corners'] = abs(df_con_resultados['pred_num'] - df_con_resultados['Corn_Tot_Real']).mean()
+    # Gráfico de tarjetas
+    fig_tarjetas = go.Figure(data=[
+        go.Bar(name='Tarjetas', x=[equipo_local, equipo_visitante], 
+               y=[final_t_loc, final_t_vis],
+               marker_color=['#f39c12', '#9b59b6'],
+               text=[f"{final_t_loc:.2f}", f"{final_t_vis:.2f}"],
+               textposition='auto')
+    ])
+    fig_tarjetas.update_layout(
+        title="Proyección de Tarjetas por Equipo",
+        yaxis_title="Tarjetas Esperadas",
+        template="plotly_white",
+        height=300,
+        showlegend=False
+    )
     
-    return metricas
+    return fig_corners, fig_tarjetas
 
 
 def crear_grafico_tendencia(df_registro, columna, titulo):
@@ -157,7 +176,8 @@ def crear_grafico_tendencia(df_registro, columna, titulo):
         if pd.isna(pred_str) or pred_str == "0":
             return 0
         try:
-            return float(pred_str.split('(')[1].split(')')[0])
+            # Extraer el número entre paréntesis
+            return float(str(pred_str).split('(')[1].split(')')[0])
         except:
             return 0
     
@@ -186,57 +206,117 @@ def crear_grafico_tendencia(df_registro, columna, titulo):
     return fig
 
 
-def crear_grafico_comparacion(equipo_local, equipo_visitante, 
-                               exp_c_loc, exp_c_vis, 
-                               final_t_loc, final_t_vis):
+# ==================== STATSBOMB INTEGRATION ====================
+
+@st.cache_data(ttl=3600)
+def cargar_statsbomb_competitions():
     """
-    Crea gráficos de barras comparativos entre equipos.
+    Intenta cargar competiciones disponibles en StatsBomb Open Data.
+    Usa caché para evitar llamadas repetidas.
     
     Returns:
-        tuple: (figura_corners, figura_tarjetas)
+        pd.DataFrame o None: DataFrame con competiciones disponibles
     """
-    # Gráfico de córners
-    fig_corners = go.Figure(data=[
-        go.Bar(name='Córners', x=[equipo_local, equipo_visitante], 
-               y=[exp_c_loc, exp_c_vis],
-               marker_color=['#2ecc71', '#e74c3c'])
-    ])
-    fig_corners.update_layout(
-        title="Proyección de Córners por Equipo",
-        yaxis_title="Córners Esperados",
-        template="plotly_white",
-        height=300
-    )
-    
-    # Gráfico de tarjetas
-    fig_tarjetas = go.Figure(data=[
-        go.Bar(name='Tarjetas', x=[equipo_local, equipo_visitante], 
-               y=[final_t_loc, final_t_vis],
-               marker_color=['#f39c12', '#9b59b6'])
-    ])
-    fig_tarjetas.update_layout(
-        title="Proyección de Tarjetas por Equipo",
-        yaxis_title="Tarjetas Esperadas",
-        template="plotly_white",
-        height=300
-    )
-    
-    return fig_corners, fig_tarjetas
+    try:
+        import statsbombpy as sb
+        comps = sb.competitions()
+        return comps
+    except ImportError:
+        st.warning("⚠️ statsbombpy no instalado. Instala con: pip install statsbombpy")
+        return None
+    except Exception as e:
+        st.warning(f"⚠️ No se pudo conectar a StatsBomb: {str(e)}")
+        return None
 
 
-def calcular_prediccion_ponderada(valor_reciente, valor_historico, peso_reciente=0.7):
+@st.cache_data(ttl=3600)
+def obtener_estadisticas_equipo_statsbomb(nombre_equipo, competition_id=11, season_id=90):
     """
-    Calcula predicción ponderando datos recientes vs históricos.
+    Obtiene estadísticas avanzadas de un equipo desde StatsBomb.
     
     Args:
-        valor_reciente (float): Estadística de partidos recientes
-        valor_historico (float): Estadística histórica
-        peso_reciente (float): Peso para datos recientes (0-1)
+        nombre_equipo (str): Nombre del equipo
+        competition_id (int): ID de la competición (11 = La Liga)
+        season_id (int): ID de la temporada (90 = 2020/21)
     
     Returns:
-        float: Valor ponderado
+        dict: Diccionario con estadísticas del equipo o None
     """
-    return (valor_reciente * peso_reciente) + (valor_historico * (1 - peso_reciente))
+    try:
+        import statsbombpy as sb
+        
+        # Obtener eventos de la competición
+        events = sb.competition_events(
+            country="Spain",
+            division="La Liga",
+            season="2020/2021"
+        )
+        
+        # Filtrar eventos del equipo
+        eventos_equipo = events[events['team'] == nombre_equipo]
+        
+        if len(eventos_equipo) == 0:
+            return None
+        
+        # Calcular estadísticas relevantes
+        stats = {
+            'presiones_por_partido': len(eventos_equipo[eventos_equipo['type'] == 'Pressure']) / eventos_equipo['match_id'].nunique(),
+            'duelos_ganados_pct': len(eventos_equipo[(eventos_equipo['type'] == 'Duel') & (eventos_equipo['duel_outcome'] == 'Won')]) / len(eventos_equipo[eventos_equipo['type'] == 'Duel']) * 100 if len(eventos_equipo[eventos_equipo['type'] == 'Duel']) > 0 else 0,
+            'pases_completados_pct': len(eventos_equipo[(eventos_equipo['type'] == 'Pass') & (eventos_equipo['pass_outcome'].isna())]) / len(eventos_equipo[eventos_equipo['type'] == 'Pass']) * 100 if len(eventos_equipo[eventos_equipo['type'] == 'Pass']) > 0 else 0,
+            'intercepciones_por_partido': len(eventos_equipo[eventos_equipo['type'] == 'Interception']) / eventos_equipo['match_id'].nunique(),
+            'faltas_por_partido': len(eventos_equipo[eventos_equipo['type'] == 'Foul Committed']) / eventos_equipo['match_id'].nunique(),
+        }
+        
+        return stats
+        
+    except ImportError:
+        return None
+    except Exception as e:
+        st.warning(f"⚠️ Error al obtener stats de {nombre_equipo}: {str(e)}")
+        return None
+
+
+def calcular_factor_intensidad_statsbomb(stats_local, stats_visitante):
+    """
+    Calcula un factor de ajuste basado en estadísticas de intensidad del juego.
+    Mayor intensidad = más córners y tarjetas esperados.
+    
+    Args:
+        stats_local (dict): Stats del equipo local
+        stats_visitante (dict): Stats del equipo visitante
+    
+    Returns:
+        dict: Factores de ajuste para córners y tarjetas
+    """
+    if not stats_local or not stats_visitante:
+        return {'corners': 1.0, 'tarjetas': 1.0}
+    
+    # Factor córners basado en presión e intercepciones
+    intensidad_presion = (
+        stats_local.get('presiones_por_partido', 0) + 
+        stats_visitante.get('presiones_por_partido', 0)
+    ) / 2
+    
+    # Normalizar (asumiendo media de ~150 presiones/partido)
+    factor_corners = 1.0 + ((intensidad_presion - 150) / 150) * 0.1
+    factor_corners = max(0.9, min(1.1, factor_corners))  # Limitar entre 0.9 y 1.1
+    
+    # Factor tarjetas basado en faltas
+    faltas_totales = (
+        stats_local.get('faltas_por_partido', 0) + 
+        stats_visitante.get('faltas_por_partido', 0)
+    )
+    
+    # Normalizar (asumiendo media de ~25 faltas/partido)
+    factor_tarjetas = 1.0 + ((faltas_totales - 25) / 25) * 0.15
+    factor_tarjetas = max(0.85, min(1.15, factor_tarjetas))  # Limitar entre 0.85 y 1.15
+    
+    return {
+        'corners': factor_corners,
+        'tarjetas': factor_tarjetas,
+        'intensidad_presion': intensidad_presion,
+        'faltas_totales': faltas_totales
+    }
 
 
 # ==================== INICIALIZACIÓN ====================
@@ -247,14 +327,23 @@ if 'dfs' not in st.session_state:
 if 'peso_reciente' not in st.session_state:
     st.session_state['peso_reciente'] = 0.7
 
+if 'usar_statsbomb' not in st.session_state:
+    st.session_state['usar_statsbomb'] = False
+
+if 'umbral_propension' not in st.session_state:
+    st.session_state['umbral_propension'] = 0.15
+
 # ==================== INTERFAZ PRINCIPAL ====================
 
 st.title("⚽ Sistema de Análisis Estadístico Profesional")
+st.caption("Enhanced con StatsBomb Open Data Integration")
 st.markdown("---")
 
 # Sidebar con configuración
 with st.sidebar:
-    st.header("⚙️ Configuración")
+    st.header("⚙️ Configuración Avanzada")
+    
+    st.subheader("🎯 Modelo de Predicción")
     st.session_state['peso_reciente'] = st.slider(
         "Peso datos recientes",
         min_value=0.0,
@@ -264,8 +353,41 @@ with st.sidebar:
         help="Mayor valor = más importancia a partidos recientes"
     )
     
+    st.session_state['umbral_propension'] = st.slider(
+        "Umbral de propensión (+/-)",
+        min_value=0.05,
+        max_value=0.30,
+        value=0.15,
+        step=0.05,
+        help="Distancia mínima a la línea .5 para considerar tendencia clara hacia +/- de la línea"
+    )
+    
     st.markdown("---")
-    st.info("💡 **Tip:** Ajusta el peso de datos recientes para calibrar el modelo según tu estrategia.")
+    
+    st.subheader("🌐 StatsBomb Integration")
+    
+    # Comprobar si statsbombpy está disponible
+    try:
+        import statsbombpy as sb
+        statsbomb_disponible = True
+        st.success("✅ statsbombpy instalado")
+    except ImportError:
+        statsbomb_disponible = False
+        st.error("❌ statsbombpy no instalado")
+        st.code("pip install statsbombpy", language="bash")
+    
+    if statsbomb_disponible:
+        st.session_state['usar_statsbomb'] = st.checkbox(
+            "Enriquecer con StatsBomb",
+            value=False,
+            help="Añade factores de intensidad basados en datos de StatsBomb"
+        )
+        
+        if st.session_state['usar_statsbomb']:
+            st.info("💡 Los cálculos incluirán factores de presión, duelos e intensidad del juego")
+    
+    st.markdown("---")
+    st.caption("💡 **Tip:** Ajusta los parámetros según tu estrategia de análisis")
 
 # Definición de archivos objetivo
 archivos_objetivo = {
@@ -288,12 +410,13 @@ columnas_requeridas = {
 
 # ==================== PESTAÑAS ====================
 
-tab_carga, tab_seleccion, tab_analisis, tab_predicciones, tab_backtesting = st.tabs([
+tab_carga, tab_seleccion, tab_analisis, tab_predicciones, tab_backtesting, tab_statsbomb = st.tabs([
     "📥 Gestión de Datos", 
     "⚽ Configuración", 
     "📈 Análisis Comparativo", 
     "🎯 Resultados y Registro",
-    "📊 Backtesting & Métricas"
+    "📊 Backtesting & Métricas",
+    "🌐 StatsBomb Insights"
 ])
 
 # ==================== PESTAÑA 1: CARGA DE DATOS ====================
@@ -430,7 +553,7 @@ if len(st.session_state['dfs']) >= 6:
         with col_info3:
             st.info(f"**Árbitro:** {arbitro_sel}")
     
-    # ==================== CÁLCULOS ====================
+    # ==================== CÁLCULOS BASE ====================
     
     try:
         # Filtrar datos de cada equipo
@@ -464,17 +587,41 @@ if len(st.session_state['dfs']) >= 6:
         dtv = dfs["Tarjetas Fuera"][filtro_visitante_tarjetas].iloc[0]
         dar = dfs["Árbitros"][filtro_arbitro].iloc[0]
         
-        # Cálculos Córners
-        exp_c_loc = (dcl['CFH'] + dcv['CAA']) / 2
-        exp_c_vis = (dcv['CFA'] + dcl['CAH']) / 2
-        total_c = exp_c_loc + exp_c_vis
+        # Cálculos Córners BASE
+        exp_c_loc_base = (dcl['CFH'] + dcv['CAA']) / 2
+        exp_c_vis_base = (dcv['CFA'] + dcl['CAH']) / 2
         
-        # Cálculos Tarjetas + Factor Árbitro
+        # Cálculos Tarjetas BASE + Factor Árbitro
         media_amarillas_liga = dfs["Árbitros"]["A/P"].mean()
         factor_arbitro = dar['A/P'] / media_amarillas_liga if media_amarillas_liga > 0 else 1
         
-        final_t_loc = ((dtl['YFH'] + dtv['YAA']) / 2) * factor_arbitro
-        final_t_vis = ((dtv['YFA'] + dtl['YAH']) / 2) * factor_arbitro
+        final_t_loc_base = ((dtl['YFH'] + dtv['YAA']) / 2) * factor_arbitro
+        final_t_vis_base = ((dtv['YFA'] + dtl['YAH']) / 2) * factor_arbitro
+        
+        # ==================== ENRIQUECIMIENTO CON STATSBOMB ====================
+        
+        factores_statsbomb = {'corners': 1.0, 'tarjetas': 1.0}
+        stats_sb_local = None
+        stats_sb_visitante = None
+        
+        if st.session_state.get('usar_statsbomb', False):
+            with st.spinner("🌐 Cargando datos de StatsBomb..."):
+                stats_sb_local = obtener_estadisticas_equipo_statsbomb(equipo_local)
+                stats_sb_visitante = obtener_estadisticas_equipo_statsbomb(equipo_visitante)
+                
+                if stats_sb_local and stats_sb_visitante:
+                    factores_statsbomb = calcular_factor_intensidad_statsbomb(
+                        stats_sb_local, 
+                        stats_sb_visitante
+                    )
+        
+        # Aplicar factores de StatsBomb
+        exp_c_loc = exp_c_loc_base * factores_statsbomb['corners']
+        exp_c_vis = exp_c_vis_base * factores_statsbomb['corners']
+        total_c = exp_c_loc + exp_c_vis
+        
+        final_t_loc = final_t_loc_base * factores_statsbomb['tarjetas']
+        final_t_vis = final_t_vis_base * factores_statsbomb['tarjetas']
         total_t = final_t_loc + final_t_vis
         
     except KeyError as e:
@@ -488,6 +635,10 @@ if len(st.session_state['dfs']) >= 6:
     
     with tab_analisis:
         st.header(f"🔍 Análisis de Emparejamiento: {equipo_local} vs {equipo_visitante}")
+        
+        # Mostrar si se usó StatsBomb
+        if st.session_state.get('usar_statsbomb', False) and stats_sb_local and stats_sb_visitante:
+            st.success(f"✅ Análisis enriquecido con StatsBomb (Factor Córners: {factores_statsbomb['corners']:.2f}x, Factor Tarjetas: {factores_statsbomb['tarjetas']:.2f}x)")
         
         # Gráficos comparativos
         fig_c, fig_t = crear_grafico_comparacion(
@@ -518,6 +669,9 @@ if len(st.session_state['dfs']) >= 6:
             with st.expander("📊 Desglose Local"):
                 st.write(f"**Córners a favor (casa):** {dcl['CFH']:.2f}")
                 st.write(f"**Córners en contra permitidos (casa):** {dcl['CAH']:.2f}")
+                st.write(f"**Cálculo base:** {exp_c_loc_base:.2f}")
+                if factores_statsbomb['corners'] != 1.0:
+                    st.write(f"**Factor StatsBomb:** {factores_statsbomb['corners']:.2f}x")
         
         with col_c2:
             st.metric(
@@ -528,6 +682,9 @@ if len(st.session_state['dfs']) >= 6:
             with st.expander("📊 Desglose Visitante"):
                 st.write(f"**Córners a favor (fuera):** {dcv['CFA']:.2f}")
                 st.write(f"**Córners en contra permitidos (fuera):** {dcv['CAA']:.2f}")
+                st.write(f"**Cálculo base:** {exp_c_vis_base:.2f}")
+                if factores_statsbomb['corners'] != 1.0:
+                    st.write(f"**Factor StatsBomb:** {factores_statsbomb['corners']:.2f}x")
         
         st.success(f"**📍 TOTAL PROYECTADO: {total_c:.2f} Córners**")
         
@@ -571,6 +728,8 @@ if len(st.session_state['dfs']) >= 6:
                 st.write(f"**En contra (Provoca):** {dtl['YAH']:.2f} tarjetas/partido")
                 st.write(f"**Base sin árbitro:** {(dtl['YFH'] + dtv['YAA']) / 2:.2f}")
                 st.write(f"**Factor árbitro aplicado:** {factor_arbitro:.2f}")
+                if factores_statsbomb['tarjetas'] != 1.0:
+                    st.write(f"**Factor StatsBomb:** {factores_statsbomb['tarjetas']:.2f}x")
         
         with col_tf2:
             st.metric(f"🟥 {equipo_visitante}", f"{final_t_vis:.2f} tarjetas")
@@ -579,6 +738,8 @@ if len(st.session_state['dfs']) >= 6:
                 st.write(f"**En contra (Provoca):** {dtv['YAA']:.2f} tarjetas/partido")
                 st.write(f"**Base sin árbitro:** {(dtv['YFA'] + dtl['YAH']) / 2:.2f}")
                 st.write(f"**Factor árbitro aplicado:** {factor_arbitro:.2f}")
+                if factores_statsbomb['tarjetas'] != 1.0:
+                    st.write(f"**Factor StatsBomb:** {factores_statsbomb['tarjetas']:.2f}x")
         
         st.success(f"**📍 TOTAL PROYECTADO: {total_t:.2f} Tarjetas**")
         
@@ -614,55 +775,83 @@ if len(st.session_state['dfs']) >= 6:
     with tab_predicciones:
         st.header("🎯 Dashboard de Resultados Finales")
         
-        # Sección Córners
+        # Explicación del nuevo sistema +/-
+        with st.expander("ℹ️ ¿Cómo interpretar los signos + / - ?"):
+            st.markdown(f"""
+            **Sistema de Propensión Mejorado:**
+            
+            - **+ de X.5**: La predicción tiene propensión CLARA hacia MÁS de la línea  
+              _(valor > línea + {st.session_state['umbral_propension']})_
+            
+            - **- de X.5**: La predicción tiene propensión CLARA hacia MENOS de la línea  
+              _(valor < línea - {st.session_state['umbral_propension']})_
+            
+            - **≈ X.5**: La predicción está muy CERCA de la línea (zona gris)  
+              _(distancia a la línea < {st.session_state['umbral_propension']})_
+            
+            **Ejemplo:**
+            - 9.75 córners → **"+ de 9.5"** (propensión clara hacia más de 9.5)
+            - 9.25 córners → **"- de 9.5"** (propensión clara hacia menos de 9.5)
+            - 9.45 córners → **"≈ 9.5"** (muy cerca, sin tendencia clara)
+            
+            _Ajusta el umbral en la barra lateral según tu agresividad de apuesta._
+            """)
+        
+        # Sección Córners formateada con nuevo sistema
         st.subheader("🚩 Córners")
         rc1, rc2, rc3 = st.columns(3)
         
         with rc1:
+            pred_c_total = get_pred_str(total_c, st.session_state['umbral_propension'])
             st.metric(
                 "🎯 Córners TOTAL",
-                get_pred_str(total_c),
+                pred_c_total,
                 help=f"Valor exacto: {total_c:.2f}"
             )
         
         with rc2:
+            pred_c_loc = get_pred_str(exp_c_loc, st.session_state['umbral_propension'])
             st.metric(
                 f"🏠 {equipo_local}",
-                get_pred_str(exp_c_loc),
+                pred_c_loc,
                 help=f"Valor exacto: {exp_c_loc:.2f}"
             )
         
         with rc3:
+            pred_c_vis = get_pred_str(exp_c_vis, st.session_state['umbral_propension'])
             st.metric(
                 f"✈️ {equipo_visitante}",
-                get_pred_str(exp_c_vis),
+                pred_c_vis,
                 help=f"Valor exacto: {exp_c_vis:.2f}"
             )
         
         st.markdown("---")
         
-        # Sección Tarjetas
+        # Sección Tarjetas formateada con nuevo sistema
         st.subheader("🟨 Tarjetas")
         rt1, rt2, rt3 = st.columns(3)
         
         with rt1:
+            pred_t_total = get_pred_str(total_t, st.session_state['umbral_propension'])
             st.metric(
                 "🎯 Tarjetas TOTAL",
-                get_pred_str(total_t),
+                pred_t_total,
                 help=f"Valor exacto: {total_t:.2f}"
             )
         
         with rt2:
+            pred_t_loc = get_pred_str(final_t_loc, st.session_state['umbral_propension'])
             st.metric(
                 f"🏠 {equipo_local}",
-                get_pred_str(final_t_loc),
+                pred_t_loc,
                 help=f"Valor exacto: {final_t_loc:.2f}"
             )
         
         with rt3:
+            pred_t_vis = get_pred_str(final_t_vis, st.session_state['umbral_propension'])
             st.metric(
                 f"✈️ {equipo_visitante}",
-                get_pred_str(final_t_vis),
+                pred_t_vis,
                 help=f"Valor exacto: {final_t_vis:.2f}"
             )
         
@@ -678,18 +867,18 @@ if len(st.session_state['dfs']) >= 6:
         
         with col_export2:
             if st.button("📥 Exportar a Registro Excel", type="primary"):
-                # Crear nuevo registro
+                # Crear nuevo registro con formato mejorado
                 nuevo_dato = {
                     "Fecha": datetime.now().strftime("%d/%m/%Y %H:%M"),
                     "Local": equipo_local,
                     "Visitante": equipo_visitante,
                     "Árbitro": arbitro_sel,
-                    "Corn_Tot": get_pred_str(total_c),
-                    "Corn_Loc": get_pred_str(exp_c_loc),
-                    "Corn_Vis": get_pred_str(exp_c_vis),
-                    "Tarj_Tot": get_pred_str(total_t),
-                    "Tarj_Loc": get_pred_str(final_t_loc),
-                    "Tarj_Vis": get_pred_str(final_t_vis),
+                    "Corn_Tot": pred_c_total,
+                    "Corn_Loc": pred_c_loc,
+                    "Corn_Vis": pred_c_vis,
+                    "Tarj_Tot": pred_t_total,
+                    "Tarj_Loc": pred_t_loc,
+                    "Tarj_Vis": pred_t_vis,
                     # Valores numéricos para análisis posterior
                     "Corn_Tot_Num": round(total_c, 2),
                     "Corn_Loc_Num": round(exp_c_loc, 2),
@@ -698,6 +887,9 @@ if len(st.session_state['dfs']) >= 6:
                     "Tarj_Loc_Num": round(final_t_loc, 2),
                     "Tarj_Vis_Num": round(final_t_vis, 2),
                     "Factor_Arbitro": round(factor_arbitro, 2),
+                    "Factor_StatsBomb_Corners": round(factores_statsbomb['corners'], 2),
+                    "Factor_StatsBomb_Tarjetas": round(factores_statsbomb['tarjetas'], 2),
+                    "Umbral_Propension": st.session_state['umbral_propension'],
                     # Campos para resultados reales (a completar manualmente)
                     "Corn_Tot_Real": None,
                     "Tarj_Tot_Real": None
@@ -951,6 +1143,147 @@ if len(st.session_state['dfs']) >= 6:
         
         else:
             st.info("ℹ️ No existe archivo de registro. Exporta tu primera predicción para comenzar.")
+    
+    # ==================== PESTAÑA 6: STATSBOMB INSIGHTS ====================
+    
+    with tab_statsbomb:
+        st.header("🌐 StatsBomb Open Data Insights")
+        
+        st.markdown("""
+        **StatsBomb Open Data** proporciona datos de eventos granulares de partidos profesionales.
+        Esta integración enriquece las predicciones con factores de intensidad del juego.
+        """)
+        
+        # Verificar si statsbombpy está instalado
+        try:
+            import statsbombpy as sb
+            st.success("✅ Módulo statsbombpy instalado correctamente")
+            
+            # Mostrar competiciones disponibles
+            st.subheader("📋 Competiciones Disponibles")
+            
+            with st.spinner("Cargando competiciones de StatsBomb..."):
+                comps_sb = cargar_statsbomb_competitions()
+                
+                if comps_sb is not None:
+                    st.write(f"**Total de competiciones:** {len(comps_sb)}")
+                    
+                    # Filtrar por España / La Liga si existe
+                    laliga = comps_sb[comps_sb['competition_name'].str.contains('La Liga', case=False, na=False)]
+                    
+                    if len(laliga) > 0:
+                        st.success(f"✅ La Liga encontrada: {len(laliga)} temporadas disponibles")
+                        with st.expander("Ver detalles de La Liga"):
+                            st.dataframe(laliga[['competition_name', 'season_name', 'competition_id', 'season_id']], use_container_width=True)
+                    else:
+                        st.warning("⚠️ No se encontró La Liga en datos abiertos")
+                    
+                    # Mostrar todas las competiciones
+                    with st.expander("📊 Ver todas las competiciones disponibles"):
+                        st.dataframe(comps_sb, use_container_width=True)
+                else:
+                    st.error("❌ No se pudieron cargar las competiciones")
+            
+            st.markdown("---")
+            
+            # Estadísticas de los equipos actuales si se usó StatsBomb
+            if st.session_state.get('usar_statsbomb', False) and stats_sb_local and stats_sb_visitante:
+                st.subheader(f"📊 Estadísticas Avanzadas: {equipo_local} vs {equipo_visitante}")
+                
+                col_sb1, col_sb2 = st.columns(2)
+                
+                with col_sb1:
+                    st.markdown(f"### 🏠 {equipo_local}")
+                    st.metric("Presiones/partido", f"{stats_sb_local.get('presiones_por_partido', 0):.1f}")
+                    st.metric("Duelos ganados %", f"{stats_sb_local.get('duelos_ganados_pct', 0):.1f}%")
+                    st.metric("Pases completados %", f"{stats_sb_local.get('pases_completados_pct', 0):.1f}%")
+                    st.metric("Intercepciones/partido", f"{stats_sb_local.get('intercepciones_por_partido', 0):.1f}")
+                    st.metric("Faltas/partido", f"{stats_sb_local.get('faltas_por_partido', 0):.1f}")
+                
+                with col_sb2:
+                    st.markdown(f"### ✈️ {equipo_visitante}")
+                    st.metric("Presiones/partido", f"{stats_sb_visitante.get('presiones_por_partido', 0):.1f}")
+                    st.metric("Duelos ganados %", f"{stats_sb_visitante.get('duelos_ganados_pct', 0):.1f}%")
+                    st.metric("Pases completados %", f"{stats_sb_visitante.get('pases_completados_pct', 0):.1f}%")
+                    st.metric("Intercepciones/partido", f"{stats_sb_visitante.get('intercepciones_por_partido', 0):.1f}")
+                    st.metric("Faltas/partido", f"{stats_sb_visitante.get('faltas_por_partido', 0):.1f}")
+                
+                st.markdown("---")
+                
+                st.subheader("🎯 Factores de Ajuste Calculados")
+                
+                col_factor1, col_factor2 = st.columns(2)
+                
+                with col_factor1:
+                    st.metric(
+                        "Factor Córners",
+                        f"{factores_statsbomb['corners']:.2f}x",
+                        help="Basado en intensidad de presión del juego"
+                    )
+                    if 'intensidad_presion' in factores_statsbomb:
+                        st.caption(f"Intensidad de presión: {factores_statsbomb['intensidad_presion']:.1f} presiones/partido")
+                
+                with col_factor2:
+                    st.metric(
+                        "Factor Tarjetas",
+                        f"{factores_statsbomb['tarjetas']:.2f}x",
+                        help="Basado en faltas cometidas por partido"
+                    )
+                    if 'faltas_totales' in factores_statsbomb:
+                        st.caption(f"Faltas totales: {factores_statsbomb['faltas_totales']:.1f} faltas/partido")
+            
+            elif not st.session_state.get('usar_statsbomb', False):
+                st.info("ℹ️ Activa 'Enriquecer con StatsBomb' en la barra lateral para ver estadísticas avanzadas de los equipos seleccionados.")
+            else:
+                st.warning("⚠️ No se encontraron datos de StatsBomb para los equipos seleccionados. Los equipos deben estar en La Liga 2020/21 (datos abiertos).")
+            
+            st.markdown("---")
+            
+            # Información adicional
+            st.subheader("📚 Recursos")
+            
+            col_rec1, col_rec2 = st.columns(2)
+            
+            with col_rec1:
+                st.markdown("""
+                **Enlaces Útiles:**
+                - [StatsBomb Open Data GitHub](https://github.com/statsbomb/open-data)
+                - [statsbombpy Documentation](https://github.com/statsbomb/statsbombpy)
+                - [StatsBomb Website](https://statsbomb.com)
+                """)
+            
+            with col_rec2:
+                st.markdown("""
+                **Cómo usar:**
+                1. Activa "Enriquecer con StatsBomb" en sidebar
+                2. Las predicciones incluirán factores de intensidad
+                3. Los factores ajustan córners y tarjetas según estilo de juego
+                """)
+            
+        except ImportError:
+            st.error("❌ statsbombpy no está instalado")
+            st.markdown("""
+            **Para instalar statsbombpy:**
+            
+            ```bash
+            pip install statsbombpy
+            ```
+            
+            Luego actualiza tu `requirements.txt`:
+            ```
+            statsbombpy
+            ```
+            
+            Y redespliega la app en Streamlit Cloud.
+            """)
+            
+            st.info("""
+            **¿Qué obtendrás con StatsBomb?**
+            - Datos de eventos (pases, tiros, presiones, duelos)
+            - Factores de intensidad del juego
+            - Estadísticas avanzadas por equipo
+            - Ajustes automáticos en predicciones
+            """)
 
 else:
     # Mensaje cuando no hay datos suficientes
@@ -967,4 +1300,13 @@ else:
 # ==================== FOOTER ====================
 
 st.markdown("---")
-st.caption("⚽ Sistema de Análisis Estadístico Profesional | Versión 2.0 Mejorada")
+col_footer1, col_footer2 = st.columns([3, 1])
+
+with col_footer1:
+    st.caption("⚽ Sistema de Análisis Estadístico Profesional | Enhanced con StatsBomb")
+
+with col_footer2:
+    if st.session_state.get('usar_statsbomb', False):
+        st.caption("🌐 StatsBomb: ✅ Activo")
+    else:
+        st.caption("📊 Modo: Estándar")
